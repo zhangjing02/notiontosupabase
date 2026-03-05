@@ -15,6 +15,8 @@ function App() {
     const [results, setResults] = useState([]);
     const [loading, setLoading] = useState(false);
     const [errorInfo, setErrorInfo] = useState('');
+    const [page, setPage] = useState(0);
+    const [hasMore, setHasMore] = useState(true);
 
     const getEmbedding = async (text) => {
         const { data, error } = await supabase.functions.invoke('get-embedding', {
@@ -24,22 +26,30 @@ function App() {
         return data.embedding;
     };
 
-    // 快捷搜索函数 (语义 + 关键词)
-    const performSearch = async (searchTerm) => {
+    const performSearch = async (searchTerm, isNewSearch = true) => {
         if (searchTerm.length < 2) {
             setResults([]);
             return;
         }
 
-        setLoading(true);
+        if (isNewSearch) {
+            setLoading(true);
+            setPage(0);
+            setHasMore(true);
+        }
+
         setErrorInfo('');
         try {
-            // 1. 并行发起三个维度的检索：向量语义、标题精确匹配、内容关键词匹配
+            const currentPage = isNewSearch ? 0 : page + 1;
+            const pageSize = 10;
+            const offset = currentPage * pageSize;
+
+            // 1. 并行发起三个维度的检索
             const embeddingPromise = getEmbedding(searchTerm).then(emb =>
                 supabase.rpc('match_knowledge_base', {
                     query_embedding: emb,
-                    match_threshold: 0.22, // 进一步微调阈值
-                    match_count: 10
+                    match_threshold: 0.18, // 进一步降低阈值，确保召回更多
+                    match_count: 50 // RPC 召回多一些，前端由于聚合做分页
                 })
             );
 
@@ -47,13 +57,13 @@ function App() {
                 .from('knowledge_base')
                 .select('*')
                 .ilike('title', `%${searchTerm}%`)
-                .limit(10);
+                .order('created_at', { ascending: false });
 
             const contentMatchPromise = supabase
                 .from('knowledge_base')
                 .select('*')
                 .ilike('content', `%${searchTerm}%`)
-                .limit(5);
+                .order('created_at', { ascending: false });
 
             const [vectorResponse, titleResponse, contentResponse] = await Promise.all([
                 embeddingPromise,
@@ -61,15 +71,13 @@ function App() {
                 contentMatchPromise
             ]);
 
-            // 提取结果并打分排序
+            // 提取结果并打分排序 (聚合所有结果)
             const resultMap = new Map();
 
-            // 类型 1: 标题命中 (权重最高: 10分)
             (titleResponse.data || []).forEach(item => {
                 resultMap.set(item.notion_id, { ...item, score: 10 });
             });
 
-            // 类型 2: 向量命中 (权重中等: 相似度 * 8)
             (vectorResponse.data || []).forEach(item => {
                 const existing = resultMap.get(item.notion_id);
                 const vectorScore = (item.similarity || 0.5) * 8;
@@ -78,19 +86,26 @@ function App() {
                 }
             });
 
-            // 类型 3: 内容命中 (权重最低: 2分，仅作为补充)
             (contentResponse.data || []).forEach(item => {
                 if (!resultMap.has(item.notion_id)) {
                     resultMap.set(item.notion_id, { ...item, score: 2 });
                 }
             });
 
-            // 最终排序：按总分倒序
-            const finalResults = Array.from(resultMap.values())
-                .sort((a, b) => b.score - a.score)
-                .slice(0, 10);
+            // 排序并进行前端分页
+            const sortedAll = Array.from(resultMap.values())
+                .sort((a, b) => b.score - a.score);
 
-            setResults(finalResults);
+            const pagedResults = sortedAll.slice(offset, offset + pageSize);
+
+            if (isNewSearch) {
+                setResults(pagedResults);
+            } else {
+                setResults(prev => [...prev, ...pagedResults]);
+            }
+
+            setPage(currentPage);
+            setHasMore(offset + pageSize < sortedAll.length);
         } catch (err) {
             console.error('Search error:', err);
             setErrorInfo(err.message || '搜索服务暂时不可用');
@@ -102,11 +117,29 @@ function App() {
     // 防抖处理逻辑
     useEffect(() => {
         const timer = setTimeout(() => {
-            if (query) performSearch(query);
-        }, 600); // 600ms 防抖
+            if (query) performSearch(query, true);
+            else setResults([]);
+        }, 600);
 
         return () => clearTimeout(timer);
     }, [query]);
+
+    // 无限滚动监听
+    useEffect(() => {
+        const observer = new IntersectionObserver(
+            entries => {
+                if (entries[0].isIntersecting && hasMore && !loading && query) {
+                    performSearch(query, false);
+                }
+            },
+            { threshold: 0.1 }
+        );
+
+        const target = document.querySelector('#load-more-trigger');
+        if (target) observer.observe(target);
+
+        return () => observer.disconnect();
+    }, [hasMore, loading, query, page]);
 
     const handleSearchChange = (e) => {
         setQuery(e.target.value);
@@ -134,10 +167,6 @@ function App() {
             </div>
 
             <div className="results-list">
-                {loading && <div className="loading-state">🔍 正在深钻知识库...</div>}
-
-                {errorInfo && <div className="error-state">⚠️ {errorInfo}</div>}
-
                 {results.map((item, idx) => (
                     <div key={item.notion_id || idx} className="result-card">
                         <div className="card-header">
@@ -146,7 +175,6 @@ function App() {
                         </div>
                         <p>{item.content}</p>
 
-                        {/* Notion 原生链接跳转 */}
                         <a
                             href={item.metadata?.url || `https://www.notion.so/${item.notion_id?.replace(/-/g, '')}`}
                             target="_blank"
@@ -159,8 +187,18 @@ function App() {
                     </div>
                 ))}
 
+                <div id="load-more-trigger" style={{ height: '20px', margin: '10px 0' }}>
+                    {loading && <div className="loading-state">🔍 正在搜寻更多关联知识...</div>}
+                </div>
+
                 {!loading && query.length > 2 && results.length === 0 && (
                     <div style={{ textAlign: 'center', color: '#94a3b8' }}>No matching thoughts found.</div>
+                )}
+
+                {!hasMore && results.length > 0 && (
+                    <div style={{ textAlign: 'center', color: '#64748b', fontSize: '12px', marginTop: '20px' }}>
+                        已到达知识边界，暂无更多结果。
+                    </div>
                 )}
             </div>
         </div>
