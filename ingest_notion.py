@@ -1,0 +1,202 @@
+import os
+import sys
+import json
+import time
+from dotenv import load_dotenv
+from notion_client import Client
+from supabase import create_client, Client as SupabaseClient
+import httpx
+
+# 强制使用 UTF-8 输出
+if sys.stdout.encoding != 'utf-8':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+load_dotenv()
+
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
+
+notion = Client(auth=NOTION_TOKEN)
+supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+SKIP_TITLES = ["Untitled", "无标题", "未命名"]
+MIN_CONTENT_LENGTH = 10
+TOKEN_KEYWORDS = ["sk-", "nvapi-", "github_pat", "token", "key", "密钥"]
+
+def get_embedding(text: str):
+    url = "https://integrate.api.nvidia.com/v1/embeddings"
+    headers = {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"}
+    safe_text = text.strip()[:500] if text else "empty content"
+    if not safe_text: safe_text = "untitled page"
+    payload = {
+        "input": [safe_text],
+        "model": "nvidia/nv-embedqa-e5-v5",
+        "input_type": "passage",
+        "encoding_format": "float"
+    }
+    try:
+        response = httpx.post(url, headers=headers, json=payload, timeout=30.0)
+        response.raise_for_status()
+        return response.json()['data'][0]['embedding']
+    except Exception as e:
+        print(f"⚠️ Embedding API 错误: {e}")
+        raise e
+
+def analyze_content(text: str):
+    url = "https://integrate.api.nvidia.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"}
+    prompt = f"""分析以下文本，并提取分类信息。请仅返回 JSON 格式，包含：category, sub_category, project_name, project_type, tags. 文本内容:\n{text[:2000]}"""
+    payload = {
+        "model": "meta/llama-3.1-405b-instruct",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 512,
+        "response_format": {"type": "json_object"}
+    }
+    try:
+        response = httpx.post(url, headers=headers, json=payload, timeout=40.0)
+        response.raise_for_status()
+        result = response.json()['choices'][0]['message']['content']
+        return json.loads(result)
+    except Exception:
+        return {"category": "未分类", "sub_category": "其他", "project_name": "未知", "project_type": "未知", "tags": []}
+
+def extract_page_content(page_id: str):
+    full_text = []
+    try:
+        blocks = notion.blocks.children.list(block_id=page_id).get("results", [])
+        for block in blocks:
+            b_type = block["type"]
+            content = block.get(b_type, {})
+            if isinstance(content, dict) and "rich_text" in content:
+                for rt in content["rich_text"]:
+                    full_text.append(rt.get("plain_text", ""))
+    except Exception: pass
+    return "\n".join(full_text)
+
+import hashlib
+
+def calculate_content_hash(text: str) -> str:
+    """计算内容哈希值，识别微小改动"""
+    if not text: return ""
+    return hashlib.md5(text.encode('utf-8')).hexdigest()
+
+def get_sync_status(notion_id: str):
+    """获取已同步页面的时间戳和哈希"""
+    try:
+        res = supabase.table("knowledge_base").select("last_notion_edited_at, metadata").eq("notion_id", notion_id).execute()
+        if res.data:
+            record = res.data[0]
+            # 这里的 last_notion_edited_at 是带时区的
+            return record.get("last_notion_edited_at"), record.get("metadata", {}).get("content_hash", "")
+    except Exception: pass
+    return None, None
+
+def migrate_notion_to_supabase():
+    print(f"🚀 启动[智能增量同步版 v6] - {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    
+    all_pages = []
+    next_cursor = None
+    while True:
+        try:
+            results = notion.search(filter={"property": "object", "value": "page"}, start_cursor=next_cursor)
+            all_pages.extend(results.get("results", []))
+            next_cursor = results.get("next_cursor")
+            if not next_cursor: break
+        except Exception as e:
+            time.sleep(3)
+
+    print(f"📊 发现授权页面总数: {len(all_pages)}", flush=True)
+    stats = {"synced": 0, "updated": 0, "skipped": 0, "errors": 0}
+    
+    for page in all_pages:
+        page_id = page["id"]
+        notion_last_edited = page.get("last_edited_time")
+        
+        # 1. 快速检查已同步状态
+        db_last_edited, db_hash = get_sync_status(page_id)
+        
+        # 默认标题提取
+        title = "Untitled"
+        props = page.get("properties", {})
+        for name_prop in ["title", "Name", "名称"]:
+            if name_prop in props and props[name_prop].get("title"):
+                title = props[name_prop]["title"][0].get("plain_text", "Untitled")
+                break
+        
+        if any(skip in title for skip in SKIP_TITLES):
+            stats["skipped"] += 1
+            continue
+
+        # 增量判定逻辑：v6 采用 Hash 优先原则
+        is_update = True if db_last_edited else False
+        
+        # 如果时间戳没动，直接跳过 (极致性能)
+        if is_update and notion_last_edited[:19] <= db_last_edited[:19]:
+            stats["skipped"] += 1
+            continue
+
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                content = extract_page_content(page_id)
+                new_hash = calculate_content_hash(content)
+                
+                # 核心逻辑：即便时间戳变了，如果内容 Hash 没变，说明是属性修改（非内容修改），跳过 AI 和向量计算
+                if is_update and db_hash == new_hash:
+                    # 更新一下时间戳，防止下次还是被作为“待同步”扫出来
+                    supabase.table("knowledge_base").update({"last_notion_edited_at": notion_last_edited}).eq("notion_id", page_id).execute()
+                    stats["skipped"] += 1
+                    break
+
+                is_token = any(kw in content.lower() for kw in TOKEN_KEYWORDS)
+                if not content.strip() and not is_token: content = title
+                if len(content.strip()) < MIN_CONTENT_LENGTH and not is_token:
+                    stats["skipped"] += 1
+                    break
+
+                print(f"🔄 深度对账 [Hash变动]: {title}", flush=True)
+                
+                embedding = get_embedding(content)
+                analysis = analyze_content(content)
+
+                data = {
+                    "notion_id": page_id,
+                    "title": title[:250],
+                    "content": content,
+                    "embedding": embedding,
+                    "category": str(analysis.get("category", "未分类"))[:250],
+                    "sub_category": str(analysis.get("sub_category", ""))[:250],
+                    "project_name": str(analysis.get("project_name", ""))[:250],
+                    "project_type": str(analysis.get("project_type", ""))[:250],
+                    "tags": analysis.get("tags", [])[:5],
+                    "last_notion_edited_at": notion_last_edited,
+                    "metadata": {
+                        "source": "notion_v6_incremental", 
+                        "url": page.get("url"),
+                        "content_hash": new_hash
+                    }
+                }
+                
+                if is_update:
+                    supabase.table("knowledge_base").update(data).eq("notion_id", page_id).execute()
+                    stats["updated"] += 1
+                else:
+                    supabase.table("knowledge_base").insert(data).execute()
+                    stats["synced"] += 1
+                
+                print(f"✨ 同步成功: {title}", flush=True)
+                break 
+                
+            except Exception as e:
+                print(f"⚠️ {page_id} Error: {e}", flush=True)
+                if attempt == max_retries - 1: stats["errors"] += 1
+                time.sleep(2)
+        
+    print(f"\n🏁 任务圆满结束！ 新增: {stats['synced']} | 更新: {stats['updated']} | 跳过: {stats['skipped']} | 错误: {stats['errors']}")
+
+if __name__ == "__main__":
+    migrate_notion_to_supabase()
