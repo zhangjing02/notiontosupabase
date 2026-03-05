@@ -14,61 +14,74 @@ function App() {
     const [query, setQuery] = useState('');
     const [results, setResults] = useState([]);
     const [loading, setLoading] = useState(false);
+    const [errorInfo, setErrorInfo] = useState('');
 
     const getEmbedding = async (text) => {
-        const response = await fetch("https://integrate.api.nvidia.com/v1/embeddings", {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${NVIDIA_API_KEY}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                input: [text],
-                model: "nvidia/nv-embedqa-e5-v5",
-                input_type: "query",
-                encoding_format: "float"
-            })
+        const { data, error } = await supabase.functions.invoke('get-embedding', {
+            body: { input: text }
         });
-        const data = await response.json();
-        return data.data[0].embedding;
+        if (error) throw error;
+        return data.embedding;
     };
 
-    const handleSearch = async (e) => {
-        const value = e.target.value;
-        setQuery(value);
-
-        if (value.length < 2) {
+    // 快捷搜索函数 (语义 + 关键词)
+    const performSearch = async (searchTerm) => {
+        if (searchTerm.length < 2) {
             setResults([]);
             return;
         }
 
         setLoading(true);
+        setErrorInfo('');
         try {
-            const embedding = await getEmbedding(value);
-            const { data, error } = await supabase.rpc('match_knowledge_base', {
+            // 1. 获取语义向量
+            const embedding = await getEmbedding(searchTerm);
+
+            // 2. 执行向量搜索
+            const { data: vectorData, error: vectorError } = await supabase.rpc('match_knowledge_base', {
                 query_embedding: embedding,
-                match_threshold: 0.4, // 适当降低阈值以获得更多结果
+                match_threshold: 0.25, // 降低阈值，对中英文混合更友好
                 match_count: 5
             });
 
-            if (error) throw error;
+            if (vectorError) throw vectorError;
 
-            // 补充：不仅要 RPC 的结果，如果是普通文本，也尝试搜索
-            if (!data || data.length === 0) {
-                const { data: simpleData } = await supabase
+            // 3. 混合搜索增强：如果向量结果不足，补充关键词搜索
+            let finalResults = vectorData || [];
+
+            if (finalResults.length < 3) {
+                const { data: keywordData } = await supabase
                     .from('knowledge_base')
                     .select('*')
-                    .ilike('content', `%${value}%`)
+                    .or(`title.ilike.%${searchTerm}%,content.ilike.%${searchTerm}%`)
                     .limit(5);
-                setResults(simpleData || []);
-            } else {
-                setResults(data);
+
+                // 去重合并
+                const existingIds = new Set(finalResults.map(r => r.notion_id));
+                const additional = (keywordData || []).filter(r => !existingIds.has(r.notion_id));
+                finalResults = [...finalResults, ...additional];
             }
+
+            setResults(finalResults);
         } catch (err) {
             console.error('Search error:', err);
+            setErrorInfo(err.message || '搜索服务暂时不可用');
         } finally {
             setLoading(false);
         }
+    };
+
+    // 防抖处理逻辑
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            if (query) performSearch(query);
+        }, 600); // 600ms 防抖
+
+        return () => clearTimeout(timer);
+    }, [query]);
+
+    const handleSearchChange = (e) => {
+        setQuery(e.target.value);
     };
 
     return (
@@ -82,7 +95,7 @@ function App() {
                         type="text"
                         placeholder="Search your Notion knowledge..."
                         value={query}
-                        onChange={handleSearch}
+                        onChange={handleSearchChange}
                         autoFocus
                     />
                     <div style={{ display: 'flex', gap: '4px', alignItems: 'center', opacity: 0.5 }}>
@@ -93,7 +106,9 @@ function App() {
             </div>
 
             <div className="results-list">
-                {loading && <div style={{ textAlign: 'center', opacity: 0.5 }}>Searching deep into knowledge...</div>}
+                {loading && <div className="loading-state">🔍 正在深钻知识库...</div>}
+
+                {errorInfo && <div className="error-state">⚠️ {errorInfo}</div>}
 
                 {results.map((item, idx) => (
                     <div key={item.notion_id || idx} className="result-card">
