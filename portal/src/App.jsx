@@ -34,33 +34,61 @@ function App() {
         setLoading(true);
         setErrorInfo('');
         try {
-            // 1. 获取语义向量
-            const embedding = await getEmbedding(searchTerm);
+            // 1. 并行发起三个维度的检索：向量语义、标题精确匹配、内容关键词匹配
+            const embeddingPromise = getEmbedding(searchTerm).then(emb =>
+                supabase.rpc('match_knowledge_base', {
+                    query_embedding: emb,
+                    match_threshold: 0.22, // 进一步微调阈值
+                    match_count: 10
+                })
+            );
 
-            // 2. 执行向量搜索
-            const { data: vectorData, error: vectorError } = await supabase.rpc('match_knowledge_base', {
-                query_embedding: embedding,
-                match_threshold: 0.25, // 降低阈值，对中英文混合更友好
-                match_count: 5
+            const titleMatchPromise = supabase
+                .from('knowledge_base')
+                .select('*')
+                .ilike('title', `%${searchTerm}%`)
+                .limit(10);
+
+            const contentMatchPromise = supabase
+                .from('knowledge_base')
+                .select('*')
+                .ilike('content', `%${searchTerm}%`)
+                .limit(5);
+
+            const [vectorResponse, titleResponse, contentResponse] = await Promise.all([
+                embeddingPromise,
+                titleMatchPromise,
+                contentMatchPromise
+            ]);
+
+            // 提取结果并打分排序
+            const resultMap = new Map();
+
+            // 类型 1: 标题命中 (权重最高: 10分)
+            (titleResponse.data || []).forEach(item => {
+                resultMap.set(item.notion_id, { ...item, score: 10 });
             });
 
-            if (vectorError) throw vectorError;
+            // 类型 2: 向量命中 (权重中等: 相似度 * 8)
+            (vectorResponse.data || []).forEach(item => {
+                const existing = resultMap.get(item.notion_id);
+                const vectorScore = (item.similarity || 0.5) * 8;
+                if (!existing || vectorScore > existing.score) {
+                    resultMap.set(item.notion_id, { ...item, score: vectorScore });
+                }
+            });
 
-            // 3. 混合搜索增强：如果向量结果不足，补充关键词搜索
-            let finalResults = vectorData || [];
+            // 类型 3: 内容命中 (权重最低: 2分，仅作为补充)
+            (contentResponse.data || []).forEach(item => {
+                if (!resultMap.has(item.notion_id)) {
+                    resultMap.set(item.notion_id, { ...item, score: 2 });
+                }
+            });
 
-            if (finalResults.length < 3) {
-                const { data: keywordData } = await supabase
-                    .from('knowledge_base')
-                    .select('*')
-                    .or(`title.ilike.%${searchTerm}%,content.ilike.%${searchTerm}%`)
-                    .limit(5);
-
-                // 去重合并
-                const existingIds = new Set(finalResults.map(r => r.notion_id));
-                const additional = (keywordData || []).filter(r => !existingIds.has(r.notion_id));
-                finalResults = [...finalResults, ...additional];
-            }
+            // 最终排序：按总分倒序
+            const finalResults = Array.from(resultMap.values())
+                .sort((a, b) => b.score - a.score)
+                .slice(0, 10);
 
             setResults(finalResults);
         } catch (err) {
