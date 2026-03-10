@@ -14,10 +14,13 @@ if sys.stdout.encoding != 'utf-8':
 
 load_dotenv()
 
-NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+NOTION_TOKEN = os.getenv("NOTION_TOKEN", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
+
+if not NOTION_TOKEN:
+    print("❌ 错误: 环境变量 NOTION_TOKEN 为空")
 
 notion = Client(auth=NOTION_TOKEN)
 supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
