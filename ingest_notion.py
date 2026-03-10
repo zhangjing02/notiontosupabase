@@ -84,19 +84,36 @@ def calculate_content_hash(text: str) -> str:
     if not text: return ""
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
-def get_sync_status(notion_id: str):
-    """获取已同步页面的时间戳和哈希"""
+def fetch_all_sync_status() -> dict:
+    """一次性批量拉取数据库中所有已同步页面状态，返回以 notion_id 为 key 的字典"""
+    cache = {}
     try:
-        res = supabase.table("knowledge_base").select("last_notion_edited_at, metadata").eq("notion_id", notion_id).execute()
-        if res.data:
-            record = res.data[0]
-            # 这里的 last_notion_edited_at 是带时区的
-            return record.get("last_notion_edited_at"), record.get("metadata", {}).get("content_hash", "")
-    except Exception: pass
-    return None, None
+        page_size = 1000
+        offset = 0
+        while True:
+            res = supabase.table("knowledge_base").select("notion_id, last_notion_edited_at, metadata").range(offset, offset + page_size - 1).execute()
+            if not res.data:
+                break
+            for record in res.data:
+                nid = record.get("notion_id")
+                if nid:
+                    cache[nid] = {
+                        "last_edited": record.get("last_notion_edited_at"),
+                        "hash": record.get("metadata", {}).get("content_hash", "")
+                    }
+            if len(res.data) < page_size:
+                break
+            offset += page_size
+        print(f"📦 已从数据库预加载 {len(cache)} 条同步记录", flush=True)
+    except Exception as e:
+        print(f"⚠️ 批量预加载失败，将逐条查询: {e}", flush=True)
+    return cache
 
 def migrate_notion_to_supabase():
-    print(f"🚀 启动[智能增量同步版 v6] - {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    print(f"🚀 启动[智能增量同步版 v7 - 批量预加载优化] - {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    
+    # 核心优化：启动时一次性批量预加载所有已同步状态，避免逐页查数据库
+    sync_cache = fetch_all_sync_status()
     
     all_pages = []
     next_cursor = None
@@ -107,6 +124,7 @@ def migrate_notion_to_supabase():
             next_cursor = results.get("next_cursor")
             if not next_cursor: break
         except Exception as e:
+            print(f"⚠️ Notion 搜索异常: {e}", flush=True)
             time.sleep(3)
 
     print(f"📊 发现授权页面总数: {len(all_pages)}", flush=True)
@@ -116,7 +134,10 @@ def migrate_notion_to_supabase():
         page_id = page["id"]
         notion_last_edited = page.get("last_edited_time")
         
-        db_last_edited, db_hash = get_sync_status(page_id)
+        # 从内存缓存中查，O(1) 查询，无网络开销
+        cached = sync_cache.get(page_id, {})
+        db_last_edited = cached.get("last_edited")
+        db_hash = cached.get("hash", "")
         
         title = "Untitled"
         props = page.get("properties", {})
