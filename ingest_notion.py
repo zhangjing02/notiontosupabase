@@ -23,7 +23,7 @@ notion = Client(auth=NOTION_TOKEN)
 supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 SKIP_TITLES = ["Untitled", "无标题", "未命名"]
-MIN_CONTENT_LENGTH = 10
+MIN_CONTENT_LENGTH = 0  # 放宽限制，确保导航页也能同步
 TOKEN_KEYWORDS = ["sk-", "nvapi-", "github_pat", "token", "key", "密钥"]
 
 def get_embedding(text: str):
@@ -116,10 +116,8 @@ def migrate_notion_to_supabase():
         page_id = page["id"]
         notion_last_edited = page.get("last_edited_time")
         
-        # 1. 快速检查已同步状态
         db_last_edited, db_hash = get_sync_status(page_id)
         
-        # 默认标题提取
         title = "Untitled"
         props = page.get("properties", {})
         for name_prop in ["title", "Name", "名称"]:
@@ -131,10 +129,7 @@ def migrate_notion_to_supabase():
             stats["skipped"] += 1
             continue
 
-        # 增量判定逻辑：v6 采用 Hash 优先原则
         is_update = True if db_last_edited else False
-        
-        # 如果时间戳没动，直接跳过 (极致性能)
         if is_update and notion_last_edited[:19] <= db_last_edited[:19]:
             stats["skipped"] += 1
             continue
@@ -145,9 +140,7 @@ def migrate_notion_to_supabase():
                 content = extract_page_content(page_id)
                 new_hash = calculate_content_hash(content)
                 
-                # 核心逻辑：即便时间戳变了，如果内容 Hash 没变，说明是属性修改（非内容修改），跳过 AI 和向量计算
                 if is_update and db_hash == new_hash:
-                    # 更新一下时间戳，防止下次还是被作为“待同步”扫出来
                     supabase.table("knowledge_base").update({"last_notion_edited_at": notion_last_edited}).eq("notion_id", page_id).execute()
                     stats["skipped"] += 1
                     break
@@ -175,7 +168,7 @@ def migrate_notion_to_supabase():
                     "tags": analysis.get("tags", [])[:5],
                     "last_notion_edited_at": notion_last_edited,
                     "metadata": {
-                        "source": "notion_v6_incremental", 
+                        "source": "notion_v6_web_trigger", 
                         "url": page.get("url"),
                         "content_hash": new_hash
                     }
@@ -196,7 +189,8 @@ def migrate_notion_to_supabase():
                 if attempt == max_retries - 1: stats["errors"] += 1
                 time.sleep(2)
         
-    print(f"\n🏁 任务圆满结束！ 新增: {stats['synced']} | 更新: {stats['updated']} | 跳过: {stats['skipped']} | 错误: {stats['errors']}")
+    print(f"\n🏁 任务圆满结束！ 新增: {stats['synced']} | 更新: {stats['updated']} | 跳过: {stats['skipped']} | 错误: {stats['errors']}", flush=True)
+    return stats
 
 if __name__ == "__main__":
     migrate_notion_to_supabase()

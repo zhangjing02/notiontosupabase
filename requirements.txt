@@ -2,3 +2,6 @@ notion-client
 supabase
 python-dotenv
 httpx
+fastapi
+uvicorn
+python-multipart
