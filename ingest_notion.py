@@ -153,8 +153,8 @@ def migrate_notion_to_supabase():
             stats["skipped"] += 1
             continue
 
-        is_update = True if db_last_edited else False
-        if is_update and notion_last_edited[:19] <= db_last_edited[:19]:
+        is_update = page_id in sync_cache
+        if is_update and db_last_edited and notion_last_edited[:19] <= db_last_edited[:19]:
             stats["skipped"] += 1
             continue
 
