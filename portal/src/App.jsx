@@ -3,12 +3,17 @@ import { createClient } from '@supabase/supabase-js';
 import { Search, ExternalLink, Hash, Command } from 'lucide-react';
 import './index.css';
 
-// 这里的环境变量之后可以通过 Vite 的 .env 注入
+// 环境变量通过 Vite 的 .env 注入
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const NVIDIA_API_KEY = import.meta.env.VITE_NVIDIA_API_KEY;
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    console.error('❌ 缺少 Supabase 环境变量，请检查 Vercel 的 Environment Variables 配置。');
+}
+
+const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY)
+    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    : null;
 
 function App() {
     const [query, setQuery] = useState('');
@@ -259,7 +264,7 @@ function App() {
                             type="text"
                             placeholder="Search your Notion knowledge..."
                             value={query}
-                            onChange={handleSearchChange}
+                            onChange={(e) => setQuery(e.target.value)}
                             autoFocus
                         />
                         <div style={{ display: 'flex', gap: '4px', alignItems: 'center', opacity: 0.5 }}>
