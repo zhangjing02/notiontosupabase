@@ -1,0 +1,5 @@
+{
+  "buildCommand": "cd portal && npm install && npm run build",
+  "outputDirectory": "portal/dist",
+  "framework": "vite"
+}
