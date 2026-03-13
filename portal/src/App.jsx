@@ -257,31 +257,19 @@ function App() {
             <div className="bg-gradient"></div>
 
             <div className="search-container">
-                <div className="search-inner-wrapper" style={{ display: 'flex', gap: '12px', width: '100%', maxWidth: '800px' }}>
-                    <div className="search-inner" style={{ flex: 1 }}>
-                        <Search size={28} color="#94a3b8" />
-                        <input
-                            type="text"
-                            placeholder="Search your Notion knowledge..."
-                            value={query}
-                            onChange={(e) => setQuery(e.target.value)}
-                            autoFocus
-                        />
-                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center', opacity: 0.5 }}>
-                            <Command size={14} />
-                            <span style={{ fontSize: '12px' }}>K</span>
-                        </div>
+                <div className="search-inner">
+                    <Search size={28} color="#94a3b8" />
+                    <input
+                        type="text"
+                        placeholder="Search your Notion knowledge..."
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        autoFocus
+                    />
+                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center', opacity: 0.5 }}>
+                        <Command size={14} />
+                        <span style={{ fontSize: '12px' }}>K</span>
                     </div>
-
-                    <button
-                        className={`sync-button ${syncing ? 'syncing' : ''}`}
-                        onClick={handleSync}
-                        disabled={syncing}
-                        title="Sync from Notion"
-                    >
-                        <Hash size={18} className={syncing ? 'rotate-anim' : ''} />
-                        <span>{syncing ? 'Syncing...' : 'Sync'}</span>
-                    </button>
                 </div>
 
                 {syncStats && (
@@ -291,6 +279,17 @@ function App() {
                     </div>
                 )}
             </div>
+
+            {/* Sync 悬浮按钮 - 右下角 */}
+            <button
+                className={`sync-button ${syncing ? 'syncing' : ''}`}
+                onClick={handleSync}
+                disabled={syncing}
+                title="Sync from Notion"
+            >
+                <Hash size={18} className={syncing ? 'rotate-anim' : ''} />
+                <span>{syncing ? 'Syncing...' : 'Sync'}</span>
+            </button>
 
             <div className="results-list">
                 {results.map((item, idx) => (
