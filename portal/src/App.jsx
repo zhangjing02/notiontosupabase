@@ -378,7 +378,9 @@ function App() {
                 </div>
 
                 {!loading && query.length >= 2 && results.length === 0 && (
-                    <div style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>未找到匹配的知识。</div>
+                    <div className="loading-state" style={{ background: 'rgba(255, 255, 255, 0.02)', borderStyle: 'dashed' }}>
+                         🤷‍♂️ 未找到匹配的知识，建议尝试换个关键词。
+                    </div>
                 )}
 
                 {!hasMore && results.length > 0 && query.length >= 2 && (
