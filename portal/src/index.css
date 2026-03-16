@@ -131,29 +131,103 @@ h3 {
   font-weight: 500;
 }
 
-p {
-  color: var(--text-secondary);
-  font-size: 0.95rem;
-  line-height: 1.6;
-  margin: 0;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  transition: all 0.3s ease;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.result-card.expanded p {
-  -webkit-line-clamp: unset;
-  line-clamp: unset;
-  max-height: 2000px;
-}
-
 .content-wrapper {
   position: relative;
+}
+
+/* Markdown 排版系统 - Notion 风格 */
+.markdown-body {
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  line-height: 1.65;
+  word-wrap: break-word;
+}
+
+.result-card:not(.expanded) .markdown-body {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.markdown-body h1, 
+.markdown-body h2, 
+.markdown-body h3 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: #fff;
+}
+
+.markdown-body h1 { font-size: 1.5rem; border-bottom: 1px solid var(--glass-border); padding-bottom: 0.3em; }
+.markdown-body h2 { font-size: 1.25rem; }
+.markdown-body h3 { font-size: 1.1rem; }
+
+.markdown-body p {
+  margin-top: 0;
+  margin-bottom: 0.8rem;
+  white-space: pre-wrap;
+}
+
+.markdown-body ul, 
+.markdown-body ol {
+  margin-top: 0;
+  margin-bottom: 1rem;
+  padding-left: 1.5rem;
+}
+
+.markdown-body li {
+  margin-top: 0.25rem;
+}
+
+.markdown-body li > p {
+  margin-bottom: 0;
+}
+
+.markdown-body blockquote {
+  margin: 1rem 0;
+  padding: 0 1rem;
+  color: var(--text-secondary);
+  border-left: 4px solid var(--accent-color);
+  background: rgba(59, 130, 246, 0.05);
+  border-radius: 0 4px 4px 0;
+}
+
+.markdown-body code {
+  padding: 0.2em 0.4em;
+  margin: 0;
+  font-size: 85%;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.markdown-body pre {
+  padding: 1rem;
+  overflow: auto;
+  font-size: 85%;
+  line-height: 1.45;
+  background-color: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  margin-bottom: 1rem;
+}
+
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+
+/* 如果内容看起来像代码，应用代码块风格 */
+.markdown-body.is-code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 1rem;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
 }
 
 .card-actions {

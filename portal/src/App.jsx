@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { Search, ExternalLink, Hash, Command, Copy, Check, ChevronDown, ChevronUp, Clock } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 // 格式化相对时间
 const formatDistanceToNow = (dateString) => {
@@ -64,9 +66,11 @@ const ResultCard = ({ item, searchQuery }) => {
             </div>
 
             <div className="content-wrapper">
-                <p className={isCodeLike ? 'is-code' : ''}>
-                    <HighlightedText text={item.content} highlight={searchQuery} />
-                </p>
+                <div className={`markdown-body ${isCodeLike ? 'is-code' : ''}`}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {item.content}
+                    </ReactMarkdown>
+                </div>
 
                 {item.content?.length > 80 && (
                     <button className="expand-toggle" onClick={(e) => { e.stopPropagation(); setIsExpanded(!isExpanded); }}>
