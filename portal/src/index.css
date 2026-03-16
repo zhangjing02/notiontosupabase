@@ -141,10 +141,138 @@ p {
   line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  transition: all 0.3s ease;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.result-card.expanded p {
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  max-height: 2000px;
+}
+
+.content-wrapper {
+  position: relative;
+}
+
+.card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 1rem;
+  opacity: 0;
+  transform: translateY(5px);
+  transition: all 0.2s ease;
+}
+
+.result-card:hover .card-actions {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.icon-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--glass-border);
+  color: var(--text-primary);
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+}
+
+.icon-btn:hover {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: white;
+  transform: scale(1.05);
+  box-shadow: 0 0 15px rgba(59, 130, 246, 0.4);
+}
+
+.icon-btn.active {
+  background: #10b981;
+  border-color: #10b981;
+  color: white;
+}
+
+.global-actions {
+  width: 100%;
+  max-width: 800px;
+  margin-top: 1rem;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.copy-all-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 12px;
+  color: #60a5fa;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.copy-all-btn:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: var(--accent-color);
+  transform: translateY(-1px);
+}
+
+.copy-all-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.expand-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--accent-color);
+  background: rgba(59, 130, 246, 0.05);
+  border: none;
+  cursor: pointer;
+  margin-top: 12px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.expand-toggle:hover {
+  background: rgba(59, 130, 246, 0.12);
+  text-decoration: underline;
+}
+
+.highlight {
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+  border-bottom: 1px solid rgba(59, 130, 246, 0.4);
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+.card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--glass-border);
 }
 
 .notion-link {
-  margin-top: 1rem;
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
@@ -156,6 +284,20 @@ p {
 
 .notion-link:hover {
   color: var(--text-primary);
+}
+
+.time-badge {
+  font-size: 0.7rem;
+  color: #475569;
+}
+
+/* 如果内容看起来像代码，使用等宽字体 */
+.is-code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 1rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
 }
 
 .loading-state,

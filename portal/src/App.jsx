@@ -1,19 +1,107 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Search, ExternalLink, Hash, Command } from 'lucide-react';
-import './index.css';
+import { Search, ExternalLink, Hash, Command, Copy, Check, ChevronDown, ChevronUp, Clock } from 'lucide-react';
 
-// 环境变量通过 Vite 的 .env 注入
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// 格式化相对时间
+const formatDistanceToNow = (dateString) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffInSeconds = Math.floor((now - date) / 1000);
 
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    console.error('❌ 缺少 Supabase 环境变量，请检查 Vercel 的 Environment Variables 配置。');
-}
+    if (diffInSeconds < 60) return '刚刚';
+    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}分钟前`;
+    if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}小时前`;
+    if (diffInSeconds < 2592000) return `${Math.floor(diffInSeconds / 86400)}天前`;
+    return date.toLocaleDateString();
+};
 
-const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY)
-    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-    : null;
+// 搜索词高亮组件
+const HighlightedText = ({ text, highlight }) => {
+    if (!highlight.trim()) return <span>{text}</span>;
+    const parts = text.split(new RegExp(`(${highlight})`, 'gi'));
+    return (
+        <span>
+            {parts.map((part, i) =>
+                part.toLowerCase() === highlight.toLowerCase() ? (
+                    <mark key={i} className="highlight">{part}</mark>
+                ) : (
+                    part
+                )
+            )}
+        </span>
+    );
+};
+
+const ResultCard = ({ item, searchQuery }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(item.content);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+
+    // 增强代码判断：包含常见代码特征或换行较多
+    const isCodeLike = 
+        (item.content?.includes('{') && item.content?.includes('}')) || 
+        item.content?.includes('const ') || 
+        item.content?.includes('import ') ||
+        (item.content?.split('\n').length > 5);
+
+    return (
+        <div className={`result-card ${isExpanded ? 'expanded' : ''}`} onClick={() => setIsExpanded(!isExpanded)}>
+            <div className="card-header">
+                <h3><HighlightedText text={item.title} highlight={searchQuery} /></h3>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <span className="category-tag">{item.category || '未分类'}</span>
+                    <button className={`icon-btn ${copied ? 'active' : ''}`} onClick={handleCopy} title="Copy content">
+                        {copied ? <Check size={14} /> : <Copy size={14} />}
+                    </button>
+                </div>
+            </div>
+
+            <div className="content-wrapper">
+                <p className={isCodeLike ? 'is-code' : ''}>
+                    <HighlightedText text={item.content} highlight={searchQuery} />
+                </p>
+
+                {item.content?.length > 80 && (
+                    <button className="expand-toggle" onClick={(e) => { e.stopPropagation(); setIsExpanded(!isExpanded); }}>
+                        {isExpanded ? (
+                            <><ChevronUp size={14} /> 收起内容</>
+                        ) : (
+                            <><ChevronDown size={14} /> 展开全部 ({item.content.length}字)</>
+                        )}
+                    </button>
+                )}
+            </div>
+
+            <div className="card-footer">
+                <a
+                    href={item.metadata?.url || `https://www.notion.so/${item.notion_id?.replace(/-/g, '')}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="notion-link"
+                    onClick={(e) => e.stopPropagation()}
+                    translate="no"
+                >
+                    <ExternalLink size={14} />
+                    <span>Open in Notion</span>
+                </a>
+
+                {item.last_notion_edited_at && (
+                    <div className="time-badge">
+                        <Clock size={10} style={{ marginRight: '4px' }} />
+                        最后编辑于 {formatDistanceToNow(item.last_notion_edited_at)}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
 
 function App() {
     const [query, setQuery] = useState('');
@@ -40,7 +128,7 @@ function App() {
     };
 
     const performSearch = React.useCallback(async (searchTerm, isNewSearch = true) => {
-        if (loadingRef.current && !isNewSearch) return; // 防止重复加载更多
+        if (loadingRef.current && !isNewSearch) return;
 
         const currentSearchId = ++searchIdRef.current;
         const normalizedTerm = searchTerm.trim();
@@ -61,8 +149,6 @@ function App() {
             pageRef.current = 0;
             setPage(0);
             setHasMore(true);
-            // 这里不立即 setResults([])，而是在数据回来后再替换，防止闪烁
-            // 或者：只有在用户输入变动较大时才清空
         } else {
             setLoading(true);
         }
@@ -72,20 +158,19 @@ function App() {
             const pageSize = 12;
             const offset = currentPage * pageSize;
 
-            // 1. 发起并行检索
             const embeddingPromise = getEmbedding(normalizedTerm);
 
             const titleMatchPromise = supabase
                 .from('knowledge_base')
                 .select('*')
                 .ilike('title', `%${normalizedTerm}%`)
-                .order('created_at', { ascending: false });
+                .order('last_notion_edited_at', { ascending: false });
 
             const contentMatchPromise = supabase
                 .from('knowledge_base')
                 .select('*')
                 .ilike('content', `%${normalizedTerm}%`)
-                .order('created_at', { ascending: false });
+                .order('last_notion_edited_at', { ascending: false });
 
             const [embedding, titleResponse, contentResponse] = await Promise.all([
                 embeddingPromise,
@@ -93,59 +178,48 @@ function App() {
                 contentMatchPromise
             ]);
 
-            // 竞态检查
             if (currentSearchId !== searchIdRef.current) return;
 
             let vectorData = [];
             if (embedding) {
                 const { data, error } = await supabase.rpc('match_knowledge_base', {
                     query_embedding: embedding,
-                    match_threshold: 0.15,
+                    match_threshold: 0.1,
                     match_count: 50
                 });
                 if (!error) vectorData = data || [];
             }
 
-            // 2. 增强型打分与强制过滤算法 (Stricter Mode)
             const resultMap = new Map();
             const lowerSearch = normalizedTerm.toLowerCase();
 
-            // 规则 A: 标题命中 (最高优先级)
             (titleResponse.data || []).forEach(item => {
                 const lowerTitle = (item.title || '').toLowerCase();
                 let score = 0;
                 if (lowerTitle.includes(lowerSearch)) {
-                    score = 1000; // 绝对最高分
-                    // 如果标题完全匹配或以关键词开头，再给点奖励
+                    score = 1000;
                     if (lowerTitle === lowerSearch) score += 500;
                     else if (lowerTitle.startsWith(lowerSearch)) score += 200;
                 }
                 resultMap.set(item.notion_id, { ...item, score });
             });
 
-            // 规则 B: 内容命中 (中等优先级)
             (contentResponse.data || []).forEach(item => {
                 const existing = resultMap.get(item.notion_id);
                 const contentScore = 200;
                 if (!existing) {
                     resultMap.set(item.notion_id, { ...item, score: contentScore });
                 } else {
-                    // 如果已经有分数，且内容也命中，累加
                     existing.score += contentScore;
                 }
             });
 
-            // 规则 C: 向量语义匹配 (最低优先级，仅作为辅助)
-            // 策略：如果一个项既没有标题命中也没有内容命中，但向量相似度很高，我们保留它但给低分
-            // 如果已经命中了，加上相似度分作为同分排序依据
             vectorData.forEach(item => {
                 const existing = resultMap.get(item.notion_id);
-                // 相似度归一化加分 (0-15)
                 const vectorContribution = (item.similarity || 0) * 15;
 
                 if (!existing) {
-                    // 瞎联想拦截：如果向量相似度不够高 (e.g. < 0.35)，且没有文字命中，直接不显示
-                    if ((item.similarity || 0) > 0.35) {
+                    if ((item.similarity || 0) > 0.3) {
                         resultMap.set(item.notion_id, { ...item, score: vectorContribution });
                     }
                 } else {
@@ -153,20 +227,15 @@ function App() {
                 }
             });
 
-            // 最终过滤：二次确认是否有任何关键词子串命中
-            // 解决“歌手”搜出“指纹”的问题：如果得分非常低（纯靠联想且相似度一般），则剔除
             const finalCandidates = Array.from(resultMap.values()).filter(item => {
-                // 如果分数 > 100，说明至少命中了标题或内容，保留
                 if (item.score >= 100) return true;
-                // 如果只有向量分，但标题和内容里压根没有这个词的影子，剔除（防止瞎联想）
                 const hasKeywordInText = (item.title + (item.content || '')).toLowerCase().includes(lowerSearch);
-                return hasKeywordInText || item.score > 10; // 极高相关度的联想才保留
+                return hasKeywordInText || item.score > 8;
             });
 
             const sortedAll = finalCandidates.sort((a, b) => {
                 if (b.score !== a.score) return b.score - a.score;
-                // 同分时按创建时间倒序
-                return new Date(b.created_at) - new Date(a.created_at);
+                return new Date(b.last_notion_edited_at) - new Date(a.last_notion_edited_at);
             });
 
             const pagedResults = sortedAll.slice(offset, offset + pageSize);
@@ -191,9 +260,8 @@ function App() {
                 loadingRef.current = false;
             }
         }
-    }, []); // 彻底稳定引用，防止无限循环
+    }, []);
 
-    // 防抖处理逻辑
     useEffect(() => {
         const term = query.trim();
         if (!term) {
@@ -205,16 +273,15 @@ function App() {
 
         const timer = setTimeout(() => {
             performSearch(term, true);
-        }, 400); // 略微调快响应
+        }, 400);
 
         return () => clearTimeout(timer);
     }, [query, performSearch]);
 
-    // 无限滚动监听
     useEffect(() => {
         const observer = new IntersectionObserver(
             entries => {
-                if (entries[0].isIntersecting && hasMore && !loading && query.trim()) { // 增加 query.trim() 检查
+                if (entries[0].isIntersecting && hasMore && !loading && query.trim()) {
                     performSearch(query, false);
                 }
             },
@@ -240,7 +307,6 @@ function App() {
             const data = await res.json();
             if (data.status === 'success') {
                 setSyncStats(data.data);
-                // 同步成功后自动触发一次当前 query 的搜索，刷新数据
                 if (query.trim()) performSearch(query.trim(), true);
             } else {
                 setErrorInfo(data.message);
@@ -261,26 +327,37 @@ function App() {
                     <Search size={28} color="#94a3b8" />
                     <input
                         type="text"
-                        placeholder="Search your Notion knowledge..."
+                        placeholder="想找点什么知识？"
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         autoFocus
                     />
-                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center', opacity: 0.5 }}>
-                        <Command size={14} />
-                        <span style={{ fontSize: '12px' }}>K</span>
-                    </div>
                 </div>
 
                 {syncStats && (
                     <div className="sync-report">
                         ✨ 同步成功: 新增 {syncStats.synced} | 更新 {syncStats.updated} | 跳过 {syncStats.skipped}
-                        <button onClick={() => setSyncStats(null)} style={{ marginLeft: '10px', opacity: 0.5 }}>✕</button>
+                        <button onClick={() => setSyncStats(null)} style={{ marginLeft: '10px', opacity: 0.5, background: 'none', border: 'none', color: 'inherit', cursor: 'pointer' }}>✕</button>
                     </div>
                 )}
             </div>
 
-            {/* Sync 悬浮按钮 - 右下角 */}
+            {results.length > 0 && (
+                <div className="global-actions">
+                    <button 
+                        className="copy-all-btn" 
+                        onClick={() => {
+                            navigator.clipboard.writeText(results[0].content);
+                            // 这里可以简单给个提示，或者复用复制状态
+                            alert('已复制首条结果内容');
+                        }}
+                    >
+                        <Copy size={16} />
+                        直接复制首条结果内容
+                    </button>
+                </div>
+            )}
+
             <button
                 className={`sync-button ${syncing ? 'syncing' : ''}`}
                 onClick={handleSync}
@@ -288,41 +365,25 @@ function App() {
                 title="Sync from Notion"
             >
                 <Hash size={18} className={syncing ? 'rotate-anim' : ''} />
-                <span>{syncing ? 'Syncing...' : 'Sync'}</span>
+                <span>{syncing ? '同步中...' : '开始同步'}</span>
             </button>
 
             <div className="results-list">
                 {results.map((item, idx) => (
-                    <div key={item.notion_id || idx} className="result-card">
-                        <div className="card-header">
-                            <h3>{item.title}</h3>
-                            <span className="category-tag">{item.category || 'Uncategorized'}</span>
-                        </div>
-                        <p>{item.content}</p>
-
-                        <a
-                            href={item.metadata?.url || `https://www.notion.so/${item.notion_id?.replace(/-/g, '')}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="notion-link"
-                        >
-                            <ExternalLink size={14} />
-                            <span>Open in Notion</span>
-                        </a>
-                    </div>
+                    <ResultCard key={item.notion_id || idx} item={item} searchQuery={query} />
                 ))}
 
                 <div id="load-more-trigger" style={{ height: '20px', margin: '10px 0' }}>
                     {loading && <div className="loading-state">🔍 正在搜寻更多关联知识...</div>}
                 </div>
 
-                {!loading && query.length > 2 && results.length === 0 && (
-                    <div style={{ textAlign: 'center', color: '#94a3b8' }}>No matching thoughts found.</div>
+                {!loading && query.length >= 2 && results.length === 0 && (
+                    <div style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>未找到匹配的知识。</div>
                 )}
 
-                {!hasMore && results.length > 0 && (
-                    <div style={{ textAlign: 'center', color: '#64748b', fontSize: '12px', marginTop: '20px' }}>
-                        已到达知识边界，暂无更多结果。
+                {!hasMore && results.length > 0 && query.length >= 2 && (
+                    <div style={{ textAlign: 'center', color: '#64748b', fontSize: '12px', marginTop: '20px', paddingBottom: '2rem' }}>
+                        已到达知识边界。
                     </div>
                 )}
             </div>
