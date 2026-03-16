@@ -65,10 +65,10 @@ const ResultCard = ({ item, searchQuery }) => {
                 </div>
             </div>
 
-            <div className="content-wrapper">
+            <div className="content-wrapper" onClick={(e) => e.stopPropagation()}>
                 <div className={`markdown-body ${isCodeLike ? 'is-code' : ''}`}>
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {item.content}
+                        {item.content || ''}
                     </ReactMarkdown>
                 </div>
 

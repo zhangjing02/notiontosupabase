@@ -137,10 +137,11 @@ h3 {
 
 /* Markdown 排版系统 - Notion 风格 */
 .markdown-body {
-  color: var(--text-primary);
+  color: #e2e8f0 !important;
   font-size: 0.95rem;
-  line-height: 1.65;
+  line-height: 1.7;
   word-wrap: break-word;
+  user-select: text; /* 确保文本可选 */
 }
 
 .result-card:not(.expanded) .markdown-body {
