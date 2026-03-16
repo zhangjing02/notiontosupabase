@@ -103,6 +103,24 @@ const ResultCard = ({ item, searchQuery }) => {
     );
 };
 
+// 初始化 Supabase 客户端
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+const getEmbedding = async (text) => {
+    try {
+        const { data, error } = await supabase.functions.invoke('get-embedding', {
+            body: { input: text }
+        });
+        if (error) throw error;
+        return data.embedding;
+    } catch (e) {
+        console.error('Embedding error:', e);
+        return null;
+    }
+};
+
 function App() {
     const [query, setQuery] = useState('');
     const [results, setResults] = useState([]);
@@ -113,19 +131,6 @@ function App() {
     const searchIdRef = React.useRef(0);
     const pageRef = React.useRef(0);
     const loadingRef = React.useRef(false);
-
-    const getEmbedding = async (text) => {
-        try {
-            const { data, error } = await supabase.functions.invoke('get-embedding', {
-                body: { input: text }
-            });
-            if (error) throw error;
-            return data.embedding;
-        } catch (e) {
-            console.error('Embedding error:', e);
-            return null;
-        }
-    };
 
     const performSearch = React.useCallback(async (searchTerm, isNewSearch = true) => {
         if (loadingRef.current && !isNewSearch) return;
