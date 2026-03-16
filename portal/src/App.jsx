@@ -347,21 +347,6 @@ function App() {
                 )}
             </div>
 
-            {results.length > 0 && (
-                <div className="global-actions">
-                    <button 
-                        className="copy-all-btn" 
-                        onClick={() => {
-                            navigator.clipboard.writeText(results[0].content);
-                            // 这里可以简单给个提示，或者复用复制状态
-                            alert('已复制首条结果内容');
-                        }}
-                    >
-                        <Copy size={16} />
-                        直接复制首条结果内容
-                    </button>
-                </div>
-            )}
 
             <button
                 className={`sync-button ${syncing ? 'syncing' : ''}`}

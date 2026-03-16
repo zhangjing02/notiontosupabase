@@ -184,6 +184,7 @@ p {
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+  outline: none;
 }
 
 .icon-btn:hover {
@@ -200,39 +201,11 @@ p {
   color: white;
 }
 
-.global-actions {
-  width: 100%;
-  max-width: 800px;
-  margin-top: 1rem;
-  display: flex;
-  justify-content: flex-start;
+.icon-btn:focus, .icon-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
 }
 
-.copy-all-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: rgba(59, 130, 246, 0.15);
-  border: 1px solid rgba(59, 130, 246, 0.3);
-  border-radius: 12px;
-  color: #60a5fa;
-  font-size: 0.85rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.copy-all-btn:hover:not(:disabled) {
-  background: rgba(59, 130, 246, 0.25);
-  border-color: var(--accent-color);
-  transform: translateY(-1px);
-}
-
-.copy-all-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 
 .expand-toggle {
   display: flex;
