@@ -1,4 +1,3 @@
-print("DEBUG: Script started (at absolute start)", flush=True)
 import os
 import sys
 import json
@@ -14,11 +13,10 @@ import httpx
 #     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 load_dotenv()
-print("DEBUG: Script started", flush=True)
 
 NOTION_TOKEN = os.getenv("NOTION_TOKEN", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "").strip()
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "").strip()
 
@@ -33,31 +31,44 @@ LLM_FALLBACK_CHAIN = [
 if not NOTION_TOKEN:
     print("❌ 错误: 环境变量 NOTION_TOKEN 为空")
 
+# 初始化客户端
 notion = Client(auth=NOTION_TOKEN)
-supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 SKIP_TITLES = ["Untitled", "无标题", "未命名"]
 MIN_CONTENT_LENGTH = 0  # 放宽限制，确保导航页也能同步
 TOKEN_KEYWORDS = ["sk-", "nvapi-", "github_pat", "token", "key", "密钥"]
 
-def get_embedding(text: str):
+def get_embedding(text: str) -> list:
+    """调用 NVIDIA API 获取 text-embedding"""
+    if not NVIDIA_API_KEY:
+        print("⚠️ 警告: NVIDIA_API_KEY 未设置，跳过向量生成。")
+        return None
+    
+    # E5-v5 对长度有一定限制，这里简单截断（通常 512-1024 tokens）
+    # 截断前 8000 字符大致对应其 token 限制范围
+    clean_text = text[:8000].replace("\n", " ")
+    
     url = "https://integrate.api.nvidia.com/v1/embeddings"
-    headers = {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"}
-    safe_text = text.strip()[:500] if text else "empty content"
-    if not safe_text: safe_text = "untitled page"
+    headers = {
+        "Authorization": f"Bearer {NVIDIA_API_KEY}",
+        "Content-Type": "application/json"
+    }
     payload = {
-        "input": [safe_text],
+        "input": [clean_text],
         "model": "nvidia/nv-embedqa-e5-v5",
-        "input_type": "passage",
+        "input_type": "passage", # 存入数据库使用 passage
         "encoding_format": "float"
     }
+    
     try:
-        response = httpx.post(url, headers=headers, json=payload, timeout=30.0)
-        response.raise_for_status()
-        return response.json()['data'][0]['embedding']
+        with httpx.Client() as client:
+            response = client.post(url, headers=headers, json=payload, timeout=20.0)
+            response.raise_for_status()
+            return response.json()['data'][0]['embedding']
     except Exception as e:
-        print(f"⚠️ Embedding API 错误: {e}")
-        raise e
+        print(f"❌ 获取向量失败: {e}")
+        return None
 
 def analyze_content(text: str):
     """
