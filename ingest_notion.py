@@ -192,7 +192,7 @@ def fetch_all_sync_status() -> dict:
         page_size = 1000
         offset = 0
         while True:
-            res = supabase.table("knowledge_base").select("notion_id, last_notion_edited_at, metadata").range(offset, offset + page_size - 1).execute()
+            res = supabase.table("knowledge_base").select("notion_id, last_notion_edited_at, metadata, embedding").range(offset, offset + page_size - 1).execute()
             if not res.data:
                 break
             for record in res.data:
@@ -200,7 +200,8 @@ def fetch_all_sync_status() -> dict:
                 if nid:
                     cache[nid] = {
                         "last_edited": record.get("last_notion_edited_at"),
-                        "hash": record.get("metadata", {}).get("content_hash", "")
+                        "hash": record.get("metadata", {}).get("content_hash", ""),
+                        "has_embedding": record.get("embedding") is not None
                     }
             if len(res.data) < page_size:
                 break
@@ -260,7 +261,11 @@ def migrate_notion_to_supabase():
             continue
 
         is_update = page_id in sync_cache
-        if is_update and db_last_edited and notion_last_edited[:19] <= db_last_edited[:19]:
+        has_embed = cached.get("has_embedding", False)
+        
+        # 只有在 (1)已经是更新状态 (2)时间戳没变 (3)已经有向量 的情况下才跳过
+        if is_update and db_last_edited and notion_last_edited[:19] <= db_last_edited[:19] and has_embed:
+            # print(f"⏭️ 跳过已同步、时间戳未变且有向量的页面: {title}", flush=True)
             stats["skipped"] += 1
             continue
 
