@@ -7,10 +7,10 @@ from notion_client import Client
 from supabase import create_client, Client as SupabaseClient
 import httpx
 
-# 强制使用 UTF-8 输出
-if sys.stdout.encoding != 'utf-8':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# Removed sys.stdout re-encoding for better background compatibility
+# if sys.stdout.encoding != 'utf-8':
+#     import io
+#     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 load_dotenv()
 
@@ -18,6 +18,15 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "").strip()
+ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "").strip()
+
+# 自动切换模型链
+LLM_FALLBACK_CHAIN = [
+    {"provider": "nvidia", "model": "meta/llama-3.1-405b-instruct"},
+    {"provider": "nvidia", "model": "meta/llama-3.3-70b-instruct"},
+    {"provider": "nvidia", "model": "meta/llama-3.1-70b-instruct"},
+    {"provider": "zhipu", "model": "glm-4"}
+]
 
 if not NOTION_TOKEN:
     print("❌ 错误: 环境变量 NOTION_TOKEN 为空")
@@ -49,23 +58,57 @@ def get_embedding(text: str):
         raise e
 
 def analyze_content(text: str):
-    url = "https://integrate.api.nvidia.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"}
+    """
+    分析内容并提取分类信息，支持多模型自动切换/降级。
+    """
     prompt = f"""分析以下文本，并提取分类信息。请仅返回 JSON 格式，包含：category, sub_category, project_name, project_type, tags. 文本内容:\n{text[:2000]}"""
-    payload = {
-        "model": "meta/llama-3.1-405b-instruct",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2,
-        "max_tokens": 512,
-        "response_format": {"type": "json_object"}
-    }
-    try:
-        response = httpx.post(url, headers=headers, json=payload, timeout=40.0)
-        response.raise_for_status()
-        result = response.json()['choices'][0]['message']['content']
-        return json.loads(result)
-    except Exception:
-        return {"category": "未分类", "sub_category": "其他", "project_name": "未知", "project_type": "未知", "tags": []}
+    
+    for cfg in LLM_FALLBACK_CHAIN:
+        provider = cfg["provider"]
+        model = cfg["model"]
+        
+        try:
+            if provider == "nvidia":
+                if not NVIDIA_API_KEY: continue
+                url = "https://integrate.api.nvidia.com/v1/chat/completions"
+                headers = {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"}
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1,
+                    "max_tokens": 512,
+                    "response_format": {"type": "json_object"}
+                }
+            elif provider == "zhipu":
+                if not ZHIPU_API_KEY: continue
+                url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+                headers = {"Authorization": f"Bearer {ZHIPU_API_KEY}", "Content-Type": "application/json"}
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1
+                }
+            
+            print(f"🤖 尝试使用 {provider}/{model} 进行分析...", flush=True)
+            response = httpx.post(url, headers=headers, json=payload, timeout=40.0)
+            response.raise_for_status()
+            
+            result_str = response.json()['choices'][0]['message']['content']
+            # 清理部分模型可能带有的 markdown 标识符
+            if result_str.startswith("```json"):
+                result_str = result_str.split("```json")[1].split("```")[0].strip()
+            elif result_str.startswith("```"):
+                result_str = result_str.split("```")[1].split("```")[0].strip()
+                
+            return json.loads(result_str)
+            
+        except Exception as e:
+            print(f"⚠️ 模型 {model} 调用失败: {e}，尝试下一个...", flush=True)
+            continue
+            
+    # 如果全部失败，返回默认值
+    print("❌ 所有模型均告失败，使用默认分类", flush=True)
+    return {"category": "未分类", "sub_category": "其他", "project_name": "未知", "project_type": "未知", "tags": []}
 
 def extract_page_content(page_id: str):
     full_text = []
@@ -79,6 +122,48 @@ def extract_page_content(page_id: str):
                     full_text.append(rt.get("plain_text", ""))
     except Exception: pass
     return "\n".join(full_text)
+
+def extract_database_content(database_id: str):
+    """
+    提取数据库中所有行（Page）的内容并合并
+    """
+    rows_text = []
+    try:
+        # 这里限制只读取前 100 行，避免超大数据库卡死
+        response = notion.databases.query(database_id=database_id, page_size=100)
+        for row in response.get("results", []):
+            row_parts = []
+            props = row.get("properties", {})
+            for p_name, p_val in props.items():
+                p_type = p_val.get("type")
+                if p_type == "title":
+                    text = "".join([t["plain_text"] for t in p_val["title"]])
+                    row_parts.append(f"{p_name}: {text}")
+                elif p_type == "rich_text":
+                    text = "".join([t["plain_text"] for t in p_val["rich_text"]])
+                    row_parts.append(f"{p_name}: {text}")
+                elif p_type == "select":
+                    sel = p_val.get("select")
+                    if sel: row_parts.append(f"{p_name}: {sel['name']}")
+                elif p_type == "multi_select":
+                    sels = [s["name"] for s in p_val.get("multi_select", [])]
+                    if sels: row_parts.append(f"{p_name}: {', '.join(sels)}")
+                elif p_type in ["url", "email", "phone_number"]:
+                    val = p_val.get(p_type)
+                    if val: row_parts.append(f"{p_name}: {val}")
+                elif p_type == "status":
+                    status = p_val.get("status")
+                    if status: row_parts.append(f"{p_name}: {status['name']}")
+                elif p_type == "checkbox":
+                    val = p_val.get("checkbox")
+                    row_parts.append(f"{p_name}: {val}")
+            
+            if row_parts:
+                rows_text.append(" | ".join(row_parts))
+    except Exception as e:
+        print(f"⚠️ 提取数据库 {database_id} 内容失败: {e}")
+    
+    return "\n".join(rows_text)
 
 import hashlib
 
@@ -122,7 +207,8 @@ def migrate_notion_to_supabase():
     next_cursor = None
     while True:
         try:
-            results = notion.search(filter={"property": "object", "value": "page"}, start_cursor=next_cursor)
+            # 取消 object: page 过滤，允许同步 database
+            results = notion.search(start_cursor=next_cursor)
             all_pages.extend(results.get("results", []))
             next_cursor = results.get("next_cursor")
             if not next_cursor: break
@@ -143,11 +229,18 @@ def migrate_notion_to_supabase():
         db_hash = cached.get("hash", "")
         
         title = "Untitled"
-        props = page.get("properties", {})
-        for name_prop in ["title", "Name", "名称"]:
-            if name_prop in props and props[name_prop].get("title"):
-                title = props[name_prop]["title"][0].get("plain_text", "Untitled")
-                break
+        obj_type = page.get("object", "page")
+        
+        if obj_type == "database":
+            title_list = page.get("title", [])
+            if title_list:
+                title = title_list[0].get("plain_text", "Untitled")
+        else:
+            props = page.get("properties", {})
+            for name_prop in ["title", "Name", "名称"]:
+                if name_prop in props and props[name_prop].get("title"):
+                    title = props[name_prop]["title"][0].get("plain_text", "Untitled")
+                    break
         
         if any(skip in title for skip in SKIP_TITLES):
             stats["skipped"] += 1
@@ -161,7 +254,10 @@ def migrate_notion_to_supabase():
         max_retries = 2
         for attempt in range(max_retries):
             try:
-                content = extract_page_content(page_id)
+                if obj_type == "database":
+                    content = extract_database_content(page_id)
+                else:
+                    content = extract_page_content(page_id)
                 new_hash = calculate_content_hash(content)
                 
                 if is_update and db_hash == new_hash:
