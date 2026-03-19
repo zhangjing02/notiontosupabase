@@ -225,6 +225,7 @@ def migrate_notion_to_supabase():
             results = notion.search(start_cursor=next_cursor)
             all_pages.extend(results.get("results", []))
             next_cursor = results.get("next_cursor")
+            print(f"🔍 已搜索到 {len(all_pages)} 条记录...", flush=True)
             if not next_cursor: break
         except Exception as e:
             print(f"⚠️ Notion 搜索异常: {e}", flush=True)
@@ -233,9 +234,13 @@ def migrate_notion_to_supabase():
     print(f"📊 发现授权页面总数: {len(all_pages)}", flush=True)
     stats = {"synced": 0, "updated": 0, "skipped": 0, "errors": 0}
     
-    for page in all_pages:
+    for i, page in enumerate(all_pages):
         page_id = page["id"]
         notion_last_edited = page.get("last_edited_time")
+        
+        # 实时显示进度
+        if (i + 1) % 10 == 0 or i == 0 or i == len(all_pages) - 1:
+            print(f"🔄 进度: {i+1}/{len(all_pages)}...", flush=True)
         
         # 从内存缓存中查，O(1) 查询，无网络开销
         cached = sync_cache.get(page_id, {})
