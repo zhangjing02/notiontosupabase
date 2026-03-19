@@ -1,3 +1,4 @@
+print("DEBUG: Script started (at absolute start)", flush=True)
 import os
 import sys
 import json
@@ -13,6 +14,7 @@ import httpx
 #     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 load_dotenv()
+print("DEBUG: Script started", flush=True)
 
 NOTION_TOKEN = os.getenv("NOTION_TOKEN", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
