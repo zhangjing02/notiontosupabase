@@ -29,7 +29,7 @@ LLM_FALLBACK_CHAIN = [
 ]
 
 if not NOTION_TOKEN:
-    print("❌ 错误: 环境变量 NOTION_TOKEN 为空")
+    print("[ERROR] 环境变量 NOTION_TOKEN 为空")
 
 # 初始化客户端
 notion = Client(auth=NOTION_TOKEN)
@@ -42,12 +42,17 @@ TOKEN_KEYWORDS = ["sk-", "nvapi-", "github_pat", "token", "key", "密钥"]
 def get_embedding(text: str) -> list:
     """调用 NVIDIA API 获取 text-embedding"""
     if not NVIDIA_API_KEY:
-        print("⚠️ 警告: NVIDIA_API_KEY 未设置，跳过向量生成。")
+        print("[WARN] NVIDIA_API_KEY 未设置，跳过向量生成。")
         return None
     
-    # E5-v5 对长度有一定限制，这里简单截断（通常 512-1024 tokens）
-    # 截断前 8000 字符大致对应其 token 限制范围
-    clean_text = text[:8000].replace("\n", " ")
+    # 防御性检查：API 不接受空字符串数组或列表
+    if not text or not text.strip():
+        return None
+        
+    # E5-v5 限制 512 tokens，截断 500 字符（更加均衡，确保高密度文档不溢出）
+    clean_text = text[:500].replace("\n", " ").strip()
+    if not clean_text:
+        return None
     
     url = "https://integrate.api.nvidia.com/v1/embeddings"
     headers = {
@@ -67,7 +72,10 @@ def get_embedding(text: str) -> list:
             response.raise_for_status()
             return response.json()['data'][0]['embedding']
     except Exception as e:
-        print(f"❌ 获取向量失败: {e}")
+        error_msg = str(e)
+        if hasattr(e, 'response') and e.response:
+             error_msg += f" | Details: {e.response.text}"
+        print(f"[ERROR] 获取向量失败: {error_msg}")
         return None
 
 def analyze_content(text: str):
@@ -102,7 +110,7 @@ def analyze_content(text: str):
                     "temperature": 0.1
                 }
             
-            print(f"🤖 尝试使用 {provider}/{model} 进行分析...", flush=True)
+            print(f"[INFO] 尝试使用 {provider}/{model} 进行分析...", flush=True)
             response = httpx.post(url, headers=headers, json=payload, timeout=40.0)
             response.raise_for_status()
             
@@ -116,14 +124,26 @@ def analyze_content(text: str):
             return json.loads(result_str)
             
         except Exception as e:
-            print(f"⚠️ 模型 {model} 调用失败: {e}，尝试下一个...", flush=True)
+            print(f"[WARN] 模型 {model} 调用失败: {e}，尝试下一个...", flush=True)
             continue
             
     # 如果全部失败，返回默认值
-    print("❌ 所有模型均告失败，使用默认分类", flush=True)
+    print("[ERROR] 所有模型均告失败，使用默认分类", flush=True)
     return {"category": "未分类", "sub_category": "其他", "project_name": "未知", "project_type": "未知", "tags": []}
 
-def extract_page_content(page_id: str):
+def get_page_content(page_id: str, obj_type: str = "page"):
+    """
+    提取页面或数据库的内容。
+    """
+    if obj_type == "database":
+        try:
+            db_obj = notion.databases.retrieve(database_id=page_id)
+            title = "".join([t.get("plain_text", "") for t in db_obj.get("title", [])])
+            props = db_obj.get("properties", {})
+            return f"Notion Database: {title}\nProperties: " + ", ".join(props.keys())
+        except Exception:
+            return "Notion Database (No details available)"
+
     full_text = []
     try:
         blocks = notion.blocks.children.list(block_id=page_id).get("results", [])
@@ -136,47 +156,45 @@ def extract_page_content(page_id: str):
     except Exception: pass
     return "\n".join(full_text)
 
-def extract_database_content(database_id: str):
+def extract_database_row_content(row: dict) -> str:
     """
-    提取数据库中所有行（Page）的内容并合并
+    提取数据库中单行（Page）的内容，将各列属性拼接为一段文本
     """
-    rows_text = []
+    row_parts = []
     try:
-        # 这里限制只读取前 100 行，避免超大数据库卡死
-        response = notion.databases.query(database_id=database_id, page_size=100)
-        for row in response.get("results", []):
-            row_parts = []
-            props = row.get("properties", {})
-            for p_name, p_val in props.items():
-                p_type = p_val.get("type")
-                if p_type == "title":
-                    text = "".join([t["plain_text"] for t in p_val["title"]])
-                    row_parts.append(f"{p_name}: {text}")
-                elif p_type == "rich_text":
-                    text = "".join([t["plain_text"] for t in p_val["rich_text"]])
-                    row_parts.append(f"{p_name}: {text}")
-                elif p_type == "select":
-                    sel = p_val.get("select")
-                    if sel: row_parts.append(f"{p_name}: {sel['name']}")
-                elif p_type == "multi_select":
-                    sels = [s["name"] for s in p_val.get("multi_select", [])]
-                    if sels: row_parts.append(f"{p_name}: {', '.join(sels)}")
-                elif p_type in ["url", "email", "phone_number"]:
-                    val = p_val.get(p_type)
-                    if val: row_parts.append(f"{p_name}: {val}")
-                elif p_type == "status":
-                    status = p_val.get("status")
-                    if status: row_parts.append(f"{p_name}: {status['name']}")
-                elif p_type == "checkbox":
-                    val = p_val.get("checkbox")
-                    row_parts.append(f"{p_name}: {val}")
+        props = row.get("properties", {})
+        for p_name, p_val in props.items():
+            if not p_val or not isinstance(p_val, dict): continue
+            p_type = p_val.get("type")
+            text = ""
             
-            if row_parts:
-                rows_text.append(" | ".join(row_parts))
+            if p_type == "title":
+                text = "".join([t.get("plain_text", "") for t in p_val.get("title", [])])
+            elif p_type == "rich_text":
+                text = "".join([t.get("plain_text", "") for t in p_val.get("rich_text", [])])
+            elif p_type == "select":
+                sel = p_val.get("select")
+                if sel: text = sel.get('name', '')
+            elif p_type == "multi_select":
+                sels = [s.get("name", "") for s in p_val.get("multi_select", [])]
+                if sels: text = ", ".join(sels)
+            elif p_type in ["url", "email", "phone_number"]:
+                text = p_val.get(p_type, "")
+            elif p_type == "status":
+                status = p_val.get("status")
+                if status: text = status.get('name', '')
+            elif p_type == "checkbox":
+                text = str(p_val.get("checkbox", False))
+            elif p_type == "number":
+                num = p_val.get("number")
+                if num is not None: text = str(num)
+            
+            if text:
+                row_parts.append(f"{p_name}: {text}")
     except Exception as e:
-        print(f"⚠️ 提取数据库 {database_id} 内容失败: {e}")
+        print(f"[WARN] 提取数据库单行内容失败: {e}")
     
-    return "\n".join(rows_text)
+    return " | ".join(row_parts)
 
 import hashlib
 
@@ -206,61 +224,120 @@ def fetch_all_sync_status() -> dict:
             if len(res.data) < page_size:
                 break
             offset += page_size
-        print(f"📦 已从数据库预加载 {len(cache)} 条同步记录", flush=True)
+        print(f"[INFO] 已从数据库预加载 {len(cache)} 条同步记录", flush=True)
     except Exception as e:
-        print(f"⚠️ 批量预加载失败，将逐条查询: {e}", flush=True)
+        print(f"[WARN] 批量预加载失败，将逐条查询: {e}", flush=True)
     return cache
 
 def migrate_notion_to_supabase():
-    print(f"🚀 启动[智能增量同步版 v7 - 批量预加载优化] - {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    print(f"[START] 启动[智能增量同步版 v8.4 - 深度上下文增强] - {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     
     # 核心优化：启动时一次性批量预加载所有已同步状态，避免逐页查数据库
     sync_cache = fetch_all_sync_status()
     
     all_pages = []
+    database_titles = {} # 缓存数据库标题
     next_cursor = None
     while True:
         try:
-            # 取消 object: page 过滤，允许同步 database
             results = notion.search(start_cursor=next_cursor)
-            all_pages.extend(results.get("results", []))
+            res_list = results.get("results", [])
+            
+            # 记录数据库标题
+            for item in res_list:
+                if item.get("object") == "database":
+                    db_id = item.get("id")
+                    db_title = "Untitled Database"
+                    if item.get("title"):
+                        db_title = "".join([t.get("plain_text", "") for t in item["title"]])
+                    database_titles[db_id] = db_title
+
+            for item in res_list:
+                obj_type = item.get("object")
+                
+                # 定义递归发现内联数据库的辅助函数
+                def find_inline_databases(parent_id, current_title):
+                    try:
+                        children = notion.blocks.children.list(block_id=parent_id).get("results", [])
+                        for child in children:
+                            if child["type"] == "child_database":
+                                db_id = child["id"]
+                                # 检索数据库完整信息以供同步
+                                try:
+                                    db_obj = notion.databases.retrieve(database_id=db_id)
+                                    if db_id not in [p["id"] for p in all_pages]:
+                                        db_obj["_is_found_inline"] = True
+                                        all_pages.append(db_obj)
+                                        database_titles[db_id] = "".join([t.get("plain_text", "") for t in db_obj.get("title", [])])
+                                        print(f"[INFO] 发现内联数据库: {database_titles[db_id]}", flush=True)
+                                except Exception: pass
+                            elif child["type"] == "child_page":
+                                # 暂不深度递归 child_page，因为搜索已经处理了 page 级
+                                pass
+                    except Exception: pass
+
+                if obj_type == "database":
+                    all_pages.append(item) # 索引数据库本身
+                    try:
+                        db_pages = notion.databases.query(database_id=item["id"])
+                        db_title = database_titles.get(item["id"], "Database")
+                        for row in db_pages.get("results", []):
+                            row["_is_database_row"] = True
+                            row["_parent_db_title"] = db_title
+                            all_pages.append(row)
+                    except Exception as e:
+                        print(f"[WARN] 查询数据库 {item['id']} 的行失败: {e}", flush=True)
+                elif obj_type == "page":
+                    if item.get("parent", {}).get("type") == "database_id":
+                        item["_is_database_row"] = True
+                        db_id = item["parent"]["database_id"]
+                        if db_id not in database_titles:
+                            try:
+                                db_obj = notion.databases.retrieve(database_id=db_id)
+                                database_titles[db_id] = "".join([t.get("plain_text", "") for t in db_obj.get("title", [])])
+                            except: database_titles[db_id] = "Unknown Database"
+                        item["_parent_db_title"] = database_titles.get(db_id)
+                    
+                    all_pages.append(item)
+                    # 对每个发现的页面，主动探测其是否含有内联数据库
+                    find_inline_databases(item["id"], item.get("title", ""))
+            
             next_cursor = results.get("next_cursor")
-            print(f"🔍 已搜索到 {len(all_pages)} 条记录...", flush=True)
+            print(f"[INFO] 已搜索并展开到 {len(all_pages)} 条记录 (数据库标题缓存规模: {len(database_titles)})...", flush=True)
             if not next_cursor: break
         except Exception as e:
-            print(f"⚠️ Notion 搜索异常: {e}", flush=True)
+            print(f"[WARN] Notion 搜索异常: {e}", flush=True)
             time.sleep(3)
 
-    print(f"📊 发现授权页面总数: {len(all_pages)}", flush=True)
+    print(f"[INFO] 发现需处理的授权页面总数: {len(all_pages)}", flush=True)
+    total = len(all_pages)
     stats = {"synced": 0, "updated": 0, "skipped": 0, "errors": 0}
     
     for i, page in enumerate(all_pages):
         page_id = page["id"]
         notion_last_edited = page.get("last_edited_time")
+        obj_type = page.get("object", "page")
+        is_database_row = page.get("_is_database_row", False)
         
-        # 实时显示进度
-        if (i + 1) % 10 == 0 or i == 0 or i == len(all_pages) - 1:
-            print(f"🔄 进度: {i+1}/{len(all_pages)}...", flush=True)
-        
-        # 从内存缓存中查，O(1) 查询，无网络开销
+        # 从内存缓存中查
         cached = sync_cache.get(page_id, {})
         db_last_edited = cached.get("last_edited")
         db_hash = cached.get("hash", "")
         
+        # 提取标题
         title = "Untitled"
-        obj_type = page.get("object", "page")
-        
-        if obj_type == "database":
-            title_list = page.get("title", [])
-            if title_list:
-                title = title_list[0].get("plain_text", "Untitled")
+        if obj_type == "database" and page.get("title"):
+            title = "".join([t.get("plain_text", "") for t in page["title"]])
         else:
             props = page.get("properties", {})
-            for name_prop in ["title", "Name", "名称"]:
-                if name_prop in props and props[name_prop].get("title"):
-                    title = props[name_prop]["title"][0].get("plain_text", "Untitled")
+            for prop_name, prop_data in props.items():
+                if isinstance(prop_data, dict) and prop_data.get("type") == "title" and prop_data.get("title"):
+                    title = prop_data["title"][0].get("plain_text", "Untitled")
                     break
         
+        # 实时显示进度条 (单行刷新)
+        print(f"\r[{i+1}/{total}] {title[:35].ljust(35)} | {obj_type:8} | ", end='', flush=True)
+
         if any(skip in title for skip in SKIP_TITLES):
             stats["skipped"] += 1
             continue
@@ -268,47 +345,89 @@ def migrate_notion_to_supabase():
         is_update = page_id in sync_cache
         has_embed = cached.get("has_embedding", False)
         
-        # 只有在 (1)已经是更新状态 (2)时间戳没变 (3)已经有向量 的情况下才跳过
-        if is_update and db_last_edited and notion_last_edited[:19] <= db_last_edited[:19] and has_embed:
-            # print(f"⏭️ 跳过已同步、时间戳未变且有向量的页面: {title}", flush=True)
+        # 增量对账
+        should_skip = False
+        if is_update and db_last_edited and notion_last_edited:
+            # 简单的时间戳前缀比较 (YYYY-MM-DDTHH:MM:SS)
+            if notion_last_edited[:19] == db_last_edited[:19]:
+                # 时间戳一致，但我们需要确认 Hashes 是否也一致 (对于数据库行，强制校验以应用新 Context)
+                if db_hash and has_embed and not is_database_row:
+                    should_skip = True
+
+        if should_skip:
             stats["skipped"] += 1
+            print("[SKIP] 跳过", flush=True)
             continue
+        
+        # 强制更新数据库行逻辑
+        is_database_row = page.get("_is_database_row", False)
+        if is_database_row:
+            print(f"FORCING DB ROW: {title}", flush=True)
 
         max_retries = 2
         for attempt in range(max_retries):
             try:
+                # 确定内容来源
                 if obj_type == "database":
-                    content = extract_database_content(page_id)
+                    # 索引数据库本身：标题 + 属性列名
+                    content = f"Notion Database: {title}\nProperties: " + ", ".join(props.keys())
+                    # 不需要在这里 continue，让它走下面的同步逻辑存入 Supabase
+                elif is_database_row:
+                    content = extract_database_row_content(page)
+                    db_title = page.get("_parent_db_title")
+                    if not db_title and page.get("parent", {}).get("type") == "database_id":
+                        db_id = page["parent"]["database_id"]
+                        db_title = database_titles.get(db_id, "Database")
+                    
+                    if db_title:
+                        content = f"[Context-RAG: {db_title}] {content}"
                 else:
-                    content = extract_page_content(page_id)
-                new_hash = calculate_content_hash(content)
+                    # 更新内容详情
+                    content = get_page_content(page_id, obj_type)
                 
-                if is_update and db_hash == new_hash:
-                    supabase.table("knowledge_base").update({"last_notion_edited_at": notion_last_edited}).eq("notion_id", page_id).execute()
+                # 增量标识：通过版本号确保逻辑变更时能触发重新计算
+                RAG_VERSION = "v8.4"
+                new_hash = calculate_content_hash(content + RAG_VERSION)
+                
+                # 再次校验内容哈希，如果内容完全一致，则跳过后续昂贵的 API 调用
+                if is_update and db_hash == new_hash and has_embed:
+                    print(f"[SKIP] 内容无变化，跳过更新: {title}", flush=True)
                     stats["skipped"] += 1
-                    break
+                    continue
 
+                # 调试日志：识别被处理的记录
+                print(f"[SYNC] 处理变更: {title} (ID: {page_id})", flush=True)
+                
                 is_token = any(kw in content.lower() for kw in TOKEN_KEYWORDS)
                 if not content.strip() and not is_token: content = title
                 if len(content.strip()) < MIN_CONTENT_LENGTH and not is_token:
                     stats["skipped"] += 1
                     break
 
-                print(f"🔄 深度对账 [Hash变动]: {title}", flush=True)
-                
+                if is_database_row:
+                    print(f"DEBUG DB ROW PAYLOAD: {title} | Content Sample: {content[:100]}", flush=True)
+
                 embedding = get_embedding(content)
                 analysis = analyze_content(content)
+
+                # 鲁棒性防守：确保分析结果是字典且字段不为空 (针对部分模型返回 null 的情况)
+                if not isinstance(analysis, dict):
+                    analysis = {"category": "未分类", "sub_category": "其他", "project_name": "未知", "project_type": "未知", "tags": []}
+                
+                # 遍历所有字段进行 None 值的兜底处理
+                safe_tags = analysis.get("tags")
+                if not isinstance(safe_tags, list): safe_tags = []
 
                 data = {
                     "notion_id": page_id,
                     "title": title[:250],
                     "content": content,
                     "embedding": embedding,
-                    "category": str(analysis.get("category", "未分类"))[:250],
-                    "sub_category": str(analysis.get("sub_category", ""))[:250],
-                    "project_name": str(analysis.get("project_name", ""))[:250],
-                    "project_type": str(analysis.get("project_type", ""))[:250],
-                    "tags": analysis.get("tags", [])[:5],
+                    "category": str(analysis.get("category") or "未分类")[:250],
+                    "sub_category": str(analysis.get("sub_category") or "")[:250],
+                    "project_name": str(analysis.get("project_name") or "")[:250],
+                    "project_type": str(analysis.get("project_type") or "")[:250],
+                    "tags": safe_tags[:5],
                     "last_notion_edited_at": notion_last_edited,
                     "metadata": {
                         "source": "notion_v6_web_trigger", 
@@ -324,15 +443,15 @@ def migrate_notion_to_supabase():
                     supabase.table("knowledge_base").insert(data).execute()
                     stats["synced"] += 1
                 
-                print(f"✨ 同步成功: {title}", flush=True)
+                print(f"[OK] 同步成功: {title}", flush=True)
                 break 
                 
             except Exception as e:
-                print(f"⚠️ {page_id} Error: {e}", flush=True)
+                print(f"[WARN] {page_id} Error: {e}", flush=True)
                 if attempt == max_retries - 1: stats["errors"] += 1
                 time.sleep(2)
         
-    print(f"\n🏁 任务圆满结束！ 新增: {stats['synced']} | 更新: {stats['updated']} | 跳过: {stats['skipped']} | 错误: {stats['errors']}", flush=True)
+    print(f"\n[DONE] 任务圆满结束！ 新增: {stats['synced']} | 更新: {stats['updated']} | 跳过: {stats['skipped']} | 错误: {stats['errors']}", flush=True)
     return stats
 
 if __name__ == "__main__":

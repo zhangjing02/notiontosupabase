@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Search, ExternalLink, Hash, Command, Copy, Check, ChevronDown, ChevronUp, Clock } from 'lucide-react';
+import { Search, ExternalLink, Hash, Copy, Check, ChevronDown, ChevronUp, Clock } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -53,10 +53,25 @@ const ResultCard = ({ item, searchQuery }) => {
         item.content?.includes('import ') ||
         (item.content?.split('\n').length > 5);
 
+    // 提取 RAG 来源信息
+    const ragMatch = item.content?.match(/^\[Context-RAG:\s*(.+?)\]/);
+    const sourceDb = ragMatch ? ragMatch[1] : null;
+    const cleanContent = sourceDb 
+        ? item.content.replace(/^\[Context-RAG:\s*.+?\]\s*/, '') 
+        : item.content;
+
     return (
         <div className={`result-card ${isExpanded ? 'expanded' : ''}`} onClick={() => setIsExpanded(!isExpanded)}>
             <div className="card-header">
-                <h3><HighlightedText text={item.title} highlight={searchQuery} /></h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <h3><HighlightedText text={item.title} highlight={searchQuery} /></h3>
+                    {sourceDb && (
+                        <div className="source-badge">
+                            <Hash size={10} />
+                            来自数据库: {sourceDb}
+                        </div>
+                    )}
+                </div>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     <span className="category-tag">{item.category || '未分类'}</span>
                     <button className={`icon-btn ${copied ? 'active' : ''}`} onClick={handleCopy} title="Copy content">
@@ -68,7 +83,7 @@ const ResultCard = ({ item, searchQuery }) => {
             <div className="content-wrapper" onClick={(e) => e.stopPropagation()}>
                 <div className={`markdown-body ${isCodeLike ? 'is-code' : ''}`}>
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {item.content || ''}
+                        {cleanContent || ''}
                     </ReactMarkdown>
                 </div>
 
@@ -112,19 +127,6 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-const getEmbedding = async (text) => {
-    try {
-        const { data, error } = await supabase.functions.invoke('get-embedding', {
-            body: { input: text }
-        });
-        if (error) throw error;
-        return data.embedding;
-    } catch (e) {
-        console.error('Embedding error:', e);
-        return null;
-    }
-};
-
 function App() {
     const [query, setQuery] = useState('');
     const [results, setResults] = useState([]);
@@ -135,6 +137,33 @@ function App() {
     const searchIdRef = React.useRef(0);
     const pageRef = React.useRef(0);
     const loadingRef = React.useRef(false);
+    const apiBase = import.meta.env.VITE_API_URL || '';
+
+    const getEmbedding = React.useCallback(async (text) => {
+        try {
+            const { data, error } = await supabase.functions.invoke('get-embedding', {
+                body: { input: text }
+            });
+            if (error) throw error;
+            if (data?.embedding) return data.embedding;
+        } catch (e) {
+            console.warn('Supabase embedding function unavailable, fallback to /api/embed', e);
+        }
+
+        try {
+            const response = await fetch(`${apiBase}/api/embed`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input: text }),
+            });
+            if (!response.ok) return null;
+            const payload = await response.json();
+            return payload.embedding || null;
+        } catch (e) {
+            console.error('Embedding fallback error:', e);
+            return null;
+        }
+    }, [apiBase]);
 
     const performSearch = React.useCallback(async (searchTerm, isNewSearch = true) => {
         if (loadingRef.current && !isNewSearch) return;
@@ -210,12 +239,23 @@ function App() {
                     if (lowerTitle === lowerSearch) score += 500;
                     else if (lowerTitle.startsWith(lowerSearch)) score += 200;
                 }
+                // RAG 上下文增强逻辑：如果标题包含 RAG 标签且搜索词匹配标签内容
+                if (lowerTitle.includes('context-rag') && lowerTitle.includes(lowerSearch)) {
+                    score += 500;
+                }
                 resultMap.set(item.notion_id, { ...item, score });
             });
 
             (contentResponse.data || []).forEach(item => {
                 const existing = resultMap.get(item.notion_id);
-                const contentScore = 200;
+                const lowerContent = (item.content || '').toLowerCase();
+                let contentScore = 200;
+                
+                // RAG 上下文增强逻辑：如果正文包含 RAG 标签且搜索词匹配标签中的数据库名
+                if (lowerContent.includes('[context-rag:') && lowerContent.includes(lowerSearch)) {
+                    contentScore += 800; // 极高权重的显式匹配
+                }
+
                 if (!existing) {
                     resultMap.set(item.notion_id, { ...item, score: contentScore });
                 } else {
@@ -226,9 +266,10 @@ function App() {
             vectorData.forEach(item => {
                 const existing = resultMap.get(item.notion_id);
                 const vectorContribution = (item.similarity || 0) * 15;
+                const similarityThreshold = lowerSearch.length <= 4 ? 0.25 : 0.3; // 对于短词放宽阈值
 
                 if (!existing) {
-                    if ((item.similarity || 0) > 0.3) {
+                    if ((item.similarity || 0) > similarityThreshold) {
                         resultMap.set(item.notion_id, { ...item, score: vectorContribution });
                     }
                 } else {
@@ -269,7 +310,7 @@ function App() {
                 loadingRef.current = false;
             }
         }
-    }, []);
+    }, [getEmbedding]);
 
     useEffect(() => {
         const term = query.trim();
@@ -304,14 +345,14 @@ function App() {
     }, [hasMore, loading, query, page, performSearch]);
 
     const [syncing, setSyncing] = useState(false);
+    const [blockSyncing, setBlockSyncing] = useState(false);
     const [syncStats, setSyncStats] = useState(null);
 
     const handleSync = async () => {
-        if (syncing) return;
+        if (syncing || blockSyncing) return;
         setSyncing(true);
         setSyncStats(null);
         try {
-            const apiBase = import.meta.env.VITE_API_URL || '';
             const res = await fetch(`${apiBase}/api/sync`, { method: 'POST' });
             const data = await res.json();
             if (data.status === 'success') {
@@ -324,6 +365,26 @@ function App() {
             setErrorInfo('同步请求失败，请检查后端状态');
         } finally {
             setSyncing(false);
+        }
+    };
+
+    const handleBlockSync = async () => {
+        if (syncing || blockSyncing) return;
+        setBlockSyncing(true);
+        setSyncStats(null);
+        try {
+            const res = await fetch(`${apiBase}/api/sync/blocks`, { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') {
+                setSyncStats(data.data);
+                if (query.trim()) performSearch(query.trim(), true);
+            } else {
+                setErrorInfo(data.message);
+            }
+        } catch (e) {
+            setErrorInfo('块级同步请求失败，请检查后端状态');
+        } finally {
+            setBlockSyncing(false);
         }
     };
 
@@ -351,16 +412,27 @@ function App() {
                 )}
             </div>
 
+            <div className="sync-actions">
+                <button
+                    className={`sync-button block-sync ${blockSyncing ? 'syncing' : ''}`}
+                    onClick={handleBlockSync}
+                    disabled={syncing || blockSyncing}
+                    title="Block-level sync"
+                >
+                    <Hash size={18} className={blockSyncing ? 'rotate-anim' : ''} />
+                    <span>{blockSyncing ? '块级同步中...' : '块级同步'}</span>
+                </button>
 
-            <button
-                className={`sync-button ${syncing ? 'syncing' : ''}`}
-                onClick={handleSync}
-                disabled={syncing}
-                title="Sync from Notion"
-            >
-                <Hash size={18} className={syncing ? 'rotate-anim' : ''} />
-                <span>{syncing ? '同步中...' : '开始同步'}</span>
-            </button>
+                <button
+                    className={`sync-button ${syncing ? 'syncing' : ''}`}
+                    onClick={handleSync}
+                    disabled={syncing || blockSyncing}
+                    title="Sync from Notion"
+                >
+                    <Hash size={18} className={syncing ? 'rotate-anim' : ''} />
+                    <span>{syncing ? '同步中...' : '页面同步'}</span>
+                </button>
+            </div>
 
             <div className="results-list">
                 {results.map((item, idx) => (

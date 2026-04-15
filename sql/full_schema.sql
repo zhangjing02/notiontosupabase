@@ -26,6 +26,53 @@ CREATE TABLE IF NOT EXISTS public.knowledge_base (
 
 -- 3. 构建索引
 CREATE INDEX IF NOT EXISTS idx_kb_notion_id ON knowledge_base(notion_id);
+CREATE INDEX IF NOT EXISTS idx_kb_notion_block_id ON knowledge_base(notion_block_id);
 CREATE INDEX IF NOT EXISTS idx_kb_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_kb_tags ON knowledge_base USING GIN (tags);
 CREATE INDEX IF NOT EXISTS idx_kb_embedding ON knowledge_base USING hnsw (embedding vector_cosine_ops);
+
+-- 4. 语义检索 RPC（供前端与脚本统一调用）
+CREATE OR REPLACE FUNCTION public.match_knowledge_base(
+    query_embedding VECTOR(1024),
+    match_threshold FLOAT DEFAULT 0.3,
+    match_count INT DEFAULT 5
+)
+RETURNS TABLE (
+    id UUID,
+    notion_id TEXT,
+    title TEXT,
+    content TEXT,
+    category TEXT,
+    sub_category TEXT,
+    project_name TEXT,
+    project_type TEXT,
+    tags TEXT[],
+    metadata JSONB,
+    last_notion_edited_at TIMESTAMPTZ,
+    similarity FLOAT
+)
+LANGUAGE SQL
+STABLE
+AS $$
+    SELECT
+        kb.id,
+        kb.notion_id,
+        kb.title,
+        kb.content,
+        kb.category,
+        kb.sub_category,
+        kb.project_name,
+        kb.project_type,
+        kb.tags,
+        kb.metadata,
+        kb.last_notion_edited_at,
+        1 - (kb.embedding <=> query_embedding) AS similarity
+    FROM public.knowledge_base kb
+    WHERE kb.embedding IS NOT NULL
+      AND (1 - (kb.embedding <=> query_embedding)) > match_threshold
+    ORDER BY kb.embedding <=> query_embedding
+    LIMIT match_count;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.match_knowledge_base(VECTOR(1024), FLOAT, INT)
+TO anon, authenticated, service_role;

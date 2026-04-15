@@ -16,6 +16,7 @@
 
 ## 待办事项
 
-- [ ] 改造 `ingest_notion.py` 为分块读取。
-- [ ] 实现针对具体 Block 的向量生成逻辑。
-- [ ] 验证 GitHub Actions 环境变量安全性。
+- [x] 实现独立的块级增量同步脚本 `incremental_sync.py`（最小可用版）。
+- [x] 实现针对具体 Block 的向量生成逻辑（通过 `get_embedding`）。
+- [x] 将块级同步纳入统一调度策略（GitHub Actions / API 分路触发策略）。
+- [ ] 验证 GitHub Actions 环境变量安全性与最小权限配置。
