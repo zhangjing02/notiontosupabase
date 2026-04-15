@@ -46,12 +46,11 @@
    python incremental_sync.py
    ```
 
-## API 端点
+## Supabase 依赖（前端）
 
-- `POST /api/sync`：触发页面级同步。
-- `POST /api/sync/blocks`：触发块级增量同步。
-- `POST /api/embed`：生成查询 embedding（前端回退通道）。
-- `GET /api/sync/status`：查看同步运行状态。
+- Edge Function：`get-embedding`（用于查询向量生成）
+- RPC Function：`match_knowledge_base`（用于向量检索）
+- 数据表：`knowledge_base`
 
 ## 自动化调度
 

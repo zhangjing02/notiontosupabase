@@ -137,7 +137,6 @@ function App() {
     const searchIdRef = React.useRef(0);
     const pageRef = React.useRef(0);
     const loadingRef = React.useRef(false);
-    const apiBase = import.meta.env.VITE_API_URL || '';
 
     const getEmbedding = React.useCallback(async (text) => {
         try {
@@ -147,23 +146,10 @@ function App() {
             if (error) throw error;
             if (data?.embedding) return data.embedding;
         } catch (e) {
-            console.warn('Supabase embedding function unavailable, fallback to /api/embed', e);
-        }
-
-        try {
-            const response = await fetch(`${apiBase}/api/embed`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ input: text }),
-            });
-            if (!response.ok) return null;
-            const payload = await response.json();
-            return payload.embedding || null;
-        } catch (e) {
-            console.error('Embedding fallback error:', e);
+            console.warn('Supabase embedding function unavailable:', e);
             return null;
         }
-    }, [apiBase]);
+    }, []);
 
     const performSearch = React.useCallback(async (searchTerm, isNewSearch = true) => {
         if (loadingRef.current && !isNewSearch) return;
@@ -344,50 +330,6 @@ function App() {
         return () => observer.disconnect();
     }, [hasMore, loading, query, page, performSearch]);
 
-    const [syncing, setSyncing] = useState(false);
-    const [blockSyncing, setBlockSyncing] = useState(false);
-    const [syncStats, setSyncStats] = useState(null);
-
-    const handleSync = async () => {
-        if (syncing || blockSyncing) return;
-        setSyncing(true);
-        setSyncStats(null);
-        try {
-            const res = await fetch(`${apiBase}/api/sync`, { method: 'POST' });
-            const data = await res.json();
-            if (data.status === 'success') {
-                setSyncStats(data.data);
-                if (query.trim()) performSearch(query.trim(), true);
-            } else {
-                setErrorInfo(data.message);
-            }
-        } catch (e) {
-            setErrorInfo('同步请求失败，请检查后端状态');
-        } finally {
-            setSyncing(false);
-        }
-    };
-
-    const handleBlockSync = async () => {
-        if (syncing || blockSyncing) return;
-        setBlockSyncing(true);
-        setSyncStats(null);
-        try {
-            const res = await fetch(`${apiBase}/api/sync/blocks`, { method: 'POST' });
-            const data = await res.json();
-            if (data.status === 'success') {
-                setSyncStats(data.data);
-                if (query.trim()) performSearch(query.trim(), true);
-            } else {
-                setErrorInfo(data.message);
-            }
-        } catch (e) {
-            setErrorInfo('块级同步请求失败，请检查后端状态');
-        } finally {
-            setBlockSyncing(false);
-        }
-    };
-
     return (
         <div className="app-container">
             <div className="bg-gradient"></div>
@@ -403,35 +345,6 @@ function App() {
                         autoFocus
                     />
                 </div>
-
-                {syncStats && (
-                    <div className="sync-report">
-                        ✨ 同步成功: 新增 {syncStats.synced} | 更新 {syncStats.updated} | 跳过 {syncStats.skipped}
-                        <button onClick={() => setSyncStats(null)} style={{ marginLeft: '10px', opacity: 0.5, background: 'none', border: 'none', color: 'inherit', cursor: 'pointer' }}>✕</button>
-                    </div>
-                )}
-            </div>
-
-            <div className="sync-actions">
-                <button
-                    className={`sync-button block-sync ${blockSyncing ? 'syncing' : ''}`}
-                    onClick={handleBlockSync}
-                    disabled={syncing || blockSyncing}
-                    title="Block-level sync"
-                >
-                    <Hash size={18} className={blockSyncing ? 'rotate-anim' : ''} />
-                    <span>{blockSyncing ? '块级同步中...' : '块级同步'}</span>
-                </button>
-
-                <button
-                    className={`sync-button ${syncing ? 'syncing' : ''}`}
-                    onClick={handleSync}
-                    disabled={syncing || blockSyncing}
-                    title="Sync from Notion"
-                >
-                    <Hash size={18} className={syncing ? 'rotate-anim' : ''} />
-                    <span>{syncing ? '同步中...' : '页面同步'}</span>
-                </button>
             </div>
 
             <div className="results-list">
@@ -446,6 +359,12 @@ function App() {
                 {!loading && query.length >= 2 && results.length === 0 && (
                     <div className="loading-state" style={{ background: 'rgba(255, 255, 255, 0.02)', borderStyle: 'dashed' }}>
                          🤷‍♂️ 未找到匹配的知识，建议尝试换个关键词。
+                    </div>
+                )}
+
+                {errorInfo && (
+                    <div className="error-state">
+                        {errorInfo}
                     </div>
                 )}
 
